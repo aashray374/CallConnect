@@ -1,4 +1,5 @@
 #include <iostream>
+#include <random>
 
 // SQL Headers
 #include <mysql_driver.h>
@@ -22,8 +23,120 @@ using json = nlohmann::json;
 //global constants for running sql statements
 sql::mysql::MySQL_Driver* driver;
 std::unique_ptr<sql::Connection> con;
-std::unique_ptr<sql::Statement> stmt;
-std::unique_ptr<sql::ResultSet> res;
+
+// Generate a random session key
+std::string generateRandomKey(int length = 32) {
+    static const char alphanum[] =
+        "0123456789"
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+        "abcdefghijklmnopqrstuvwxyz";
+
+    std::string key;
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dis(0, sizeof(alphanum) - 2);
+
+    for (int i = 0; i < length; ++i)
+        key += alphanum[dis(gen)];
+
+    return key;
+}
+
+// Create a new user and set online with session key
+void createNewUser(const json& j) {
+    try {
+        std::unique_ptr<sql::PreparedStatement> pstmt(
+            con->prepareStatement("INSERT INTO user(email, name, password, isOnline) VALUES (?, ?, ?, ?)")
+        );
+        pstmt->setString(1, j["email"]);
+        pstmt->setString(2, j["name"]);
+        pstmt->setString(3, j["password"]);
+        pstmt->setBoolean(4, false);
+        pstmt->execute();
+
+        setOnline(j, true);
+    } catch (const sql::SQLException& e) {
+        std::cerr << "SQL Error in createNewUser: " << e.what() << std::endl;
+    }
+}
+
+// Set a user online
+void setOnline(const json& j, bool isLogin) {
+    try {
+        std::string key = generateRandomKey();
+
+        if (isLogin) {
+            std::unique_ptr<sql::PreparedStatement> pstmt(
+                con->prepareStatement("UPDATE user SET isOnline = true, sessionkey = ? WHERE email = ?")
+            );
+            pstmt->setString(1, key);
+            pstmt->setString(2, j["email"]);
+            pstmt->execute();
+        } else {
+            std::unique_ptr<sql::PreparedStatement> pstmt(
+                con->prepareStatement("SELECT password FROM user WHERE email = ?")
+            );
+            pstmt->setString(1, j["email"]);
+            std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
+
+            if (res->next()) {
+                if (j["password"] == res->getString("password")) {
+                    std::unique_ptr<sql::PreparedStatement> updateStmt(
+                        con->prepareStatement("UPDATE user SET isOnline = true, sessionkey = ? WHERE email = ?")
+                    );
+                    updateStmt->setString(1, key);
+                    updateStmt->setString(2, j["email"]);
+                    updateStmt->execute();
+                } else {
+                    std::cerr << "Incorrect password" << std::endl;
+                }
+            } else {
+                std::cerr << "User not found" << std::endl;
+            }
+        }
+    } catch (const sql::SQLException& e) {
+        std::cerr << "SQL Error in setOnline: " << e.what() << std::endl;
+    }
+}
+
+// Set a user offline, optionally delete session
+void setOffline(const json& j) {
+    try {
+        bool deleteSession = j["deleteSession"];
+        std::string key = j["key"];
+
+        std::unique_ptr<sql::PreparedStatement> pstmt(
+            con->prepareStatement("SELECT sessionKey FROM user WHERE email = ?")
+        );
+        pstmt->setString(1, j["email"]);
+        std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
+
+        if (res->next()) {
+            if (key == res->getString("sessionKey")) {
+                if (deleteSession) {
+                    std::unique_ptr<sql::PreparedStatement> updateStmt(
+                        con->prepareStatement("UPDATE user SET isOnline = false, sessionKey = NULL WHERE email = ?")
+                    );
+                    updateStmt->setString(1, j["email"]);
+                    updateStmt->execute();
+                } else {
+                    std::unique_ptr<sql::PreparedStatement> updateStmt(
+                        con->prepareStatement("UPDATE user SET isOnline = false WHERE email = ?")
+                    );
+                    updateStmt->setString(1, j["email"]);
+                    updateStmt->execute();
+                }
+            } else {
+                std::cerr << "Invalid session key" << std::endl;
+            }
+        } else {
+            std::cerr << "User not found" << std::endl;
+        }
+    } catch (const sql::SQLException& e) {
+        std::cerr << "SQL Error in setOffline: " << e.what() << std::endl;
+    }
+}
+
 
 
 //main logic for handing calls

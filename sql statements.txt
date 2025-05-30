@@ -23,3 +23,6 @@ CREATE TABLE calllog (
     FOREIGN KEY (caller_email) REFERENCES user(email),
     FOREIGN KEY (callee_email) REFERENCES user(email)
 );
+
+ALTER TABLE user ADD sessionKey VARCHAR(64) DEFAULT NULL;
+
