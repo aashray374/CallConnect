@@ -2,7 +2,10 @@ CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Iincludes
 LDFLAGS = -lmysqlcppconn -lpthread
 
-SRC = main.cpp includes/bcrypt.cpp
+SRC = main.cpp \
+      includes/bcrypt.cpp \
+      includes/blowfish.cpp
+
 OBJ = $(SRC:.cpp=.o)
 TARGET = server_app
 

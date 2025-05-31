@@ -1,5 +1,8 @@
 #include <iostream>
 #include <random>
+#include <unordered_map>
+#include <cstring>
+#include <stdexcept>
 
 // SQL Headers
 #include <mysql_driver.h>
@@ -28,6 +31,10 @@ using json = nlohmann::json;
 //global constants for running sql statements
 sql::mysql::MySQL_Driver* driver;
 std::unique_ptr<sql::Connection> con;
+
+//for message forwarding
+std::unordered_map<std::string,int> onlineClients;
+std::mutex clientMutex;
 
 // Generate a random session key
 std::string generateRandomKey(int length = 32) {
@@ -59,30 +66,14 @@ bool matchPassword(std::string input,std::string hash){
     return match;
 }
 
-// Create a new user and set online with session key
-void createNewUser(const json& j) {
-    try {
-        std::unique_ptr<sql::PreparedStatement> pstmt(
-            con->prepareStatement("INSERT INTO user(email, name, password, isOnline) VALUES (?, ?, ?, ?)")
-        );
-        std::string hash = hashPassword(j["password"]);
-        pstmt->setString(1, (std::string)j["email"]);
-        pstmt->setString(2, (std::string)j["name"]);
-        pstmt->setString(3, hash);
-        pstmt->setBoolean(4, false);
-        pstmt->execute();
 
-        setOnline(j, true);
-    } catch (const sql::SQLException& e) {
-        std::cerr << "SQL Error in createNewUser: " << e.what() << std::endl;
-    }
-}
+
 
 // Set a user online
-void setOnline(const json& j, bool isLogin) {
+void setOnline(const json& j, bool isLogin,int clientSocket) {
     try {
         std::string key = generateRandomKey();
-
+        
         if (isLogin) {
             std::unique_ptr<sql::PreparedStatement> pstmt(
                 con->prepareStatement("UPDATE user SET isOnline = true, sessionkey = ? WHERE email = ?")
@@ -90,13 +81,15 @@ void setOnline(const json& j, bool isLogin) {
             pstmt->setString(1, key);
             pstmt->setString(2, (std::string)j["email"]);
             pstmt->execute();
+            std::lock_guard<std::mutex> lock(clientMutex);
+            onlineClients[(std::string)j["email"]] = clientSocket;
         } else {
             std::unique_ptr<sql::PreparedStatement> pstmt(
                 con->prepareStatement("SELECT password FROM user WHERE email = ?")
             );
             pstmt->setString(1, (std::string)j["email"]);
             std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
-
+            
             if (res->next()) {
                 if (matchPassword(j["password"],res->getString("password"))) {
                     std::unique_ptr<sql::PreparedStatement> updateStmt(
@@ -105,6 +98,8 @@ void setOnline(const json& j, bool isLogin) {
                     updateStmt->setString(1, key);
                     updateStmt->setString(2, (std::string)j["email"]);
                     updateStmt->execute();
+                    std::lock_guard<std::mutex> lock(clientMutex);
+                    onlineClients[(std::string)j["email"]] = clientSocket;
                 } else {
                     std::cerr << "Incorrect password" << std::endl;
                 }
@@ -117,18 +112,39 @@ void setOnline(const json& j, bool isLogin) {
     }
 }
 
+
+
+// Create a new user and set online with session key
+void createNewUser(const json& j,int clientSocket) {
+    try {
+        std::unique_ptr<sql::PreparedStatement> pstmt(
+            con->prepareStatement("INSERT INTO user(email, name, password, isOnline) VALUES (?, ?, ?, ?)")
+        );
+        std::string hash = hashPassword(j["password"]);
+        pstmt->setString(1, (std::string)j["email"]);
+        pstmt->setString(2, (std::string)j["name"]);
+        pstmt->setString(3, hash);
+        pstmt->setBoolean(4, false);
+        pstmt->execute();
+
+        setOnline(j, true, clientSocket);
+    } catch (const sql::SQLException& e) {
+        std::cerr << "SQL Error in createNewUser: " << e.what() << std::endl;
+    }
+}
+
 // Set a user offline, optionally delete session
 void setOffline(const json& j) {
     try {
         bool deleteSession = j["deleteSession"];
         std::string key = j["key"];
-
+        
         std::unique_ptr<sql::PreparedStatement> pstmt(
             con->prepareStatement("SELECT sessionKey FROM user WHERE email = ?")
         );
         pstmt->setString(1, (std::string)j["email"]);
         std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
-
+        
         if (res->next()) {
             if (key == res->getString("sessionKey")) {
                 if (deleteSession) {
@@ -144,6 +160,9 @@ void setOffline(const json& j) {
                     updateStmt->setString(1, (std::string)j["email"]);
                     updateStmt->execute();
                 }
+                
+                std::lock_guard<std::mutex> lock(clientMutex);
+                onlineClients.erase((std::string)j["email"]);
             } else {
                 std::cerr << "Invalid session key" << std::endl;
             }
@@ -156,23 +175,53 @@ void setOffline(const json& j) {
 }
 
 
+void createNewCall(json &j,int clientSocket){
+    std::string from = j["from"];
+    std::string to = j["to"];
+
+    std::lock_guard<std::mutex> lock(clientMutex);
+    if (onlineClients.find(to) != onlineClients.end()) {
+        int targetSocket = onlineClients[to];
+
+        std::string msg = j.dump();
+        send(targetSocket, msg.c_str(), msg.size(), 0);
+    } else {
+        json err;
+        err["resp"] = "userOffline";
+        std::string resp = err.dump();
+        send(clientSocket, resp.c_str(), resp.size(), 0);
+    }
+}
+
+
+void acceptCall(json &j){
+
+}
+
+void rejectCall(json &j){
+
+}
+
+void forgotPassword(json &j){
+
+}
 
 //main logic for handing calls
-void handleMessage(const std::string& message) {
+void handleMessage(const std::string& message,int clientSocket) {
     try {
         json j = json::parse(message);
 
         std::string reqType = j["req"];
         if (reqType == "newUser") {
-            createNewUser(j);
+            createNewUser(j,clientSocket);
         } else if (reqType == "forgotPassword") {
             forgotPassword(j);
         } else if (reqType == "setUserOnline") {
-            setOnline(j,false);
+            setOnline(j,false,clientSocket);
         } else if (reqType == "setUserOffline") {
             setOffline(j);
         } else if (reqType == "makeCall") {
-            createNewCall(j);
+            createNewCall(j,clientSocket);
         } else if (reqType == "acceptCall") {
             acceptCall(j);
         } else if (reqType == "rejectCall") {
@@ -194,14 +243,21 @@ void handleClient(int clientSocket) {
     while (true) {
         int valread = read(clientSocket, buffer, 1024);
         if (valread <= 0) {
-            std::lock_guard<std::mutex> lock(coutMutex);
+            std::lock_guard<std::mutex> coutLock(coutMutex);
+            std::lock_guard<std::mutex> clientLock(clientMutex);
+            for(auto &it : onlineClients){
+               if(it.second == clientSocket){
+                    onlineClients.erase(it.first);
+                    break;
+                } 
+            }
             std::cout << "Client disconnected\n";
             close(clientSocket);
             break;
         }
 
         buffer[valread] = '\0';
-        handleMessage(buffer);
+        handleMessage(buffer,clientSocket);
     }
 }
 
