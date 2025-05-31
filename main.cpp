@@ -7,6 +7,8 @@
 #include <cppconn/statement.h>
 #include <cppconn/resultset.h>
 #include <cppconn/exception.h>
+#include <cppconn/prepared_statement.h>
+
 
 //TCP connection headers
 #include <thread>
@@ -17,11 +19,11 @@
 #include <netinet/in.h>
 
 //handle Json
-#include <nlohmann/json.hpp> 
+#include "json.hpp"
 using json = nlohmann::json;
 
 // for password hashing
-#include "bcrypt.h"
+#include "includes/bcrypt.h"
 
 //global constants for running sql statements
 sql::mysql::MySQL_Driver* driver;
@@ -64,8 +66,8 @@ void createNewUser(const json& j) {
             con->prepareStatement("INSERT INTO user(email, name, password, isOnline) VALUES (?, ?, ?, ?)")
         );
         std::string hash = hashPassword(j["password"]);
-        pstmt->setString(1, j["email"]);
-        pstmt->setString(2, j["name"]);
+        pstmt->setString(1, (std::string)j["email"]);
+        pstmt->setString(2, (std::string)j["name"]);
         pstmt->setString(3, hash);
         pstmt->setBoolean(4, false);
         pstmt->execute();
@@ -86,13 +88,13 @@ void setOnline(const json& j, bool isLogin) {
                 con->prepareStatement("UPDATE user SET isOnline = true, sessionkey = ? WHERE email = ?")
             );
             pstmt->setString(1, key);
-            pstmt->setString(2, j["email"]);
+            pstmt->setString(2, (std::string)j["email"]);
             pstmt->execute();
         } else {
             std::unique_ptr<sql::PreparedStatement> pstmt(
                 con->prepareStatement("SELECT password FROM user WHERE email = ?")
             );
-            pstmt->setString(1, j["email"]);
+            pstmt->setString(1, (std::string)j["email"]);
             std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
 
             if (res->next()) {
@@ -101,7 +103,7 @@ void setOnline(const json& j, bool isLogin) {
                         con->prepareStatement("UPDATE user SET isOnline = true, sessionkey = ? WHERE email = ?")
                     );
                     updateStmt->setString(1, key);
-                    updateStmt->setString(2, j["email"]);
+                    updateStmt->setString(2, (std::string)j["email"]);
                     updateStmt->execute();
                 } else {
                     std::cerr << "Incorrect password" << std::endl;
@@ -124,7 +126,7 @@ void setOffline(const json& j) {
         std::unique_ptr<sql::PreparedStatement> pstmt(
             con->prepareStatement("SELECT sessionKey FROM user WHERE email = ?")
         );
-        pstmt->setString(1, j["email"]);
+        pstmt->setString(1, (std::string)j["email"]);
         std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
 
         if (res->next()) {
@@ -133,13 +135,13 @@ void setOffline(const json& j) {
                     std::unique_ptr<sql::PreparedStatement> updateStmt(
                         con->prepareStatement("UPDATE user SET isOnline = false, sessionKey = NULL WHERE email = ?")
                     );
-                    updateStmt->setString(1, j["email"]);
+                    updateStmt->setString(1, (std::string)j["email"]);
                     updateStmt->execute();
                 } else {
                     std::unique_ptr<sql::PreparedStatement> updateStmt(
                         con->prepareStatement("UPDATE user SET isOnline = false WHERE email = ?")
                     );
-                    updateStmt->setString(1, j["email"]);
+                    updateStmt->setString(1, (std::string)j["email"]);
                     updateStmt->execute();
                 }
             } else {
@@ -213,8 +215,6 @@ int main() {
         con.reset(driver->connect("tcp://127.0.0.1:3306", "root", "root"));
 
         con->setSchema("callconnect");
-
-        stmt.reset(con->createStatement());
 
         //init of TCP connection
         int server_fd, new_socket;
