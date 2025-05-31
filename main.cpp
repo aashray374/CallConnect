@@ -20,6 +20,9 @@
 #include <nlohmann/json.hpp> 
 using json = nlohmann::json;
 
+// for password hashing
+#include "bcrypt.h"
+
 //global constants for running sql statements
 sql::mysql::MySQL_Driver* driver;
 std::unique_ptr<sql::Connection> con;
@@ -42,15 +45,28 @@ std::string generateRandomKey(int length = 32) {
     return key;
 }
 
+//encryption and de-encryption of password
+std::string hashPassword(std::string password){
+    std::string hash = bcrypt::generateHash(password);
+    return hash;
+}
+
+
+bool matchPassword(std::string input,std::string hash){
+    bool match = bcrypt::validatePassword(input,hash);
+    return match;
+}
+
 // Create a new user and set online with session key
 void createNewUser(const json& j) {
     try {
         std::unique_ptr<sql::PreparedStatement> pstmt(
             con->prepareStatement("INSERT INTO user(email, name, password, isOnline) VALUES (?, ?, ?, ?)")
         );
+        std::string hash = hashPassword(j["password"]);
         pstmt->setString(1, j["email"]);
         pstmt->setString(2, j["name"]);
-        pstmt->setString(3, j["password"]);
+        pstmt->setString(3, hash);
         pstmt->setBoolean(4, false);
         pstmt->execute();
 
@@ -80,7 +96,7 @@ void setOnline(const json& j, bool isLogin) {
             std::unique_ptr<sql::ResultSet> res(pstmt->executeQuery());
 
             if (res->next()) {
-                if (j["password"] == res->getString("password")) {
+                if (matchPassword(j["password"],res->getString("password"))) {
                     std::unique_ptr<sql::PreparedStatement> updateStmt(
                         con->prepareStatement("UPDATE user SET isOnline = true, sessionkey = ? WHERE email = ?")
                     );
@@ -150,7 +166,7 @@ void handleMessage(const std::string& message) {
         } else if (reqType == "forgotPassword") {
             forgotPassword(j);
         } else if (reqType == "setUserOnline") {
-            setOnline(j);
+            setOnline(j,false);
         } else if (reqType == "setUserOffline") {
             setOffline(j);
         } else if (reqType == "makeCall") {
